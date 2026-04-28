@@ -1,0 +1,40 @@
+[
+  { "_comment": "Note: this is how your config.json should look like. Replace the 'xxx' values."},
+  {
+    "task": "sendEmail",
+    "unit": "minutes",
+    "api": {
+      "endpoint": "xxx",  
+      "method": "POST",
+      "headers": {
+        "Authorization": "xxx",
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "subject": "Reminder Email"
+      }
+    },
+    "interval": 15,
+    "additionalData": {
+      "customHandling": "highPriority"
+    }
+  },
+  {
+    "task": "checkSiteHealth",
+    "unit": "minutes",
+    "api": {
+      "endpoint": "xxx", 
+      "method": "GET",
+      "headers": {
+        "Authorization": "xxx"
+      },
+      "params": {
+        "url": "https://mocky.io"
+      }
+    },
+    "interval": 30,
+    "additionalData": {
+      "notificationEmail": "xxx@xxx.xxx"
+    }
+  }
+]
