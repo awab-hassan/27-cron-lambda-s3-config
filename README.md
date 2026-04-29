@@ -1,70 +1,40 @@
-# Cron Lambda — S3-Driven Job Scheduler
-A lightweight, serverless AWS Lambda function triggered every minute by EventBridge. It acts as a centralized job scheduler, dynamically fetching a configuration file (`config.json`) from Amazon S3 to execute recurring HTTP tasks (e.g., reminder emails, site-health probes, webhooks). 
+# Project # 27 - cron-lambda-s3-config
 
-By decoupling the job catalogue from the codebase, you can add, update, or remove scheduled jobs simply by modifying a JSON file in S3—**zero redeployments required.**
+A serverless cron job runner. A single AWS Lambda is invoked every minute by EventBridge, fetches a job catalogue from S3, evaluates which jobs are due based on the current time, and executes them concurrently as HTTP calls. Add, update, or remove scheduled jobs by editing one JSON file in S3. No redeploys.
 
-## 🚀 Highlights
+## How It Works
 
-- **Config-as-Data:** Job definitions live as JSON in `s3://etc-configs/config.json`. Upload a new file, and the Lambda picks up the changes on the next execution tick.
-- **Concurrent Execution:** Built with modern async JavaScript. The Lambda fires all eligible tasks concurrently using `Promise.all()`, ensuring efficient execution and preventing timeout bloat.
-- **Flexible Intervals:** Each job declares a minute-based `interval`. 
-  - `< 60`: Fires when `currentMinute % interval === 0`.
-  - `≥ 60`: Fires at the top of the hour when `currentHour % (interval / 60) === 0`.
-- **Generic HTTP Runner:** Supports dynamic `method`, `endpoint`, `headers`, `body`, and `params`. Powered by `axios`, making any internal or third-party API scheduleable.
-- **Single Lambda, Unlimited Jobs:** Avoids the anti-pattern of provisioning a separate Lambda function for every cron job. Reduces AWS costs, simplifies IAM, and centralizes logs into a single CloudWatch group.
-
-## 🏗 Architecture
-
-```text
- EventBridge Rule (rate: 1 minute)
-              │
-              ▼
- Lambda (Node.js 18.x / 20.x)
-   1. Fetch s3://etc-configs/config.json using AWS SDK v3
+```
+EventBridge rule (rate: 1 minute)
+        |
+        v
+Lambda (Node.js 18.x / 20.x)
+   1. Fetch s3://<bucket>/config.json via AWS SDK v3
    2. Parse jobs array
-   3. Evaluate shouldRunTask(job.interval) for current time
-   4. Execute all eligible jobs concurrently via Axios
-   5. Log status codes to CloudWatch
+   3. For each job, evaluate shouldRunTask(job.interval) against current UTC time
+   4. Execute eligible jobs concurrently via axios
+   5. Log status codes to CloudWatch (payloads omitted)
 ```
 
-## 🛠 Tech Stack
+### Interval Semantics
 
-- **Runtime:** Node.js 18.x / 20.x (ES Modules)
-- **Dependencies:** `@aws-sdk/client-s3` (AWS SDK v3), `axios`
-- **Infrastructure:** AWS Lambda, Amazon EventBridge, Amazon S3
-- **Configuration:** JSON array hosted in S3
+Each job declares a minute-based `interval`:
 
-## 📂 Repository Layout
+- `interval < 60` — fires when `currentMinute % interval === 0`
+- `interval >= 60` — fires at the top of the hour when `currentHour % (interval / 60) === 0`
 
-```text
-CRON-LAMBDA/
-├── README.md
-├── .gitignore
-├── index.mjs           # Main Lambda handler (ES modules, AWS SDK v3)
-└── config.json         # Example of the S3 job catalogue
-```
+### Job Definition
 
-## ⚙️ How It Works
-
-1. An **EventBridge rule** invokes the Lambda function every 60 seconds.
-2. The Lambda handler uses the S3Client to fetch and parse `s3://etc-configs/config.json`.
-3. The function evaluates the schedule constraint for each job against the current wall-clock time.
-4. Eligible jobs are queued as promises and executed concurrently via `axios`.
-5. Success/failure statuses are logged to CloudWatch (payloads are omitted to prevent log bloat).
-
-### Example `config.json`
+Each job specifies `task`, an `api` block (`endpoint`, `method`, optional `headers` / `body` / `params`), and an `interval`. Any HTTP-callable API can be scheduled.
 
 ```json
 [
   {
-    "task": "sendEmail",
+    "task": "sendReminderEmails",
     "api": {
       "endpoint": "https://api.example.com/v1/emails/reminders",
       "method": "POST",
-      "headers": { 
-        "Authorization": "Bearer YOUR_TOKEN_HERE", 
-        "Content-Type": "application/json" 
-      },
+      "headers": { "Content-Type": "application/json" },
       "body": { "subject": "Daily Reminder" }
     },
     "interval": 15
@@ -81,61 +51,81 @@ CRON-LAMBDA/
 ]
 ```
 
-## 📋 Prerequisites
+> Do not store API tokens in `config.json`. Inject them via Lambda environment variables or fetch them at runtime from AWS Secrets Manager.
 
-- AWS account with provisioning access to Lambda, EventBridge, and S3.
-- Node.js 18+ installed locally for packaging.
-- An S3 bucket (default: `etc-configs`) containing a valid `config.json`.
-- An IAM Execution Role for the Lambda containing:
-  - `s3:GetObject` on `arn:aws:s3:::etc-configs/config.json`
+## Stack
+
+Node.js 18.x / 20.x (ES Modules) · `@aws-sdk/client-s3` (AWS SDK v3) · `axios` · AWS Lambda · EventBridge · S3
+
+## Repository Layout
+
+```
+cron-lambda-s3-config/
+├── index.mjs           # Lambda handler (ES modules, AWS SDK v3)
+├── config.json         # Example job catalogue
+├── .gitignore
+└── README.md
+```
+
+## Prerequisites
+
+- AWS account with access to Lambda, EventBridge, and S3
+- Node.js 18+ for packaging
+- An S3 bucket containing a valid `config.json`
+- A Lambda execution role with:
+  - `s3:GetObject` on the config object
   - `logs:CreateLogStream` and `logs:PutLogEvents`
-  - (Optional) AWS KMS permissions if the S3 bucket is encrypted.
+  - KMS decrypt permissions if the bucket is encrypted with a customer-managed key
 
-## 🚀 Setup & Deploy
+## Deployment
+
 ```bash
-# Initialize and install modern dependencies
+# Install dependencies
 npm init -y
 npm install axios @aws-sdk/client-s3
 
-# Package the function
+# Package
 zip -r function.zip index.mjs node_modules package.json
 
-# Deploy to AWS
+# Create the function
 aws lambda create-function \
-  --function-name etc-cron-runner \
+  --function-name cron-runner \
   --runtime nodejs18.x \
   --handler index.handler \
   --role <lambda-execution-role-arn> \
   --zip-file fileb://function.zip
 
-# Create the EventBridge trigger
+# Create the schedule
 aws events put-rule \
-  --name etc-every-minute \
+  --name cron-runner-every-minute \
   --schedule-expression "rate(1 minute)"
 
-# Attach the Lambda to the trigger
+# Wire the Lambda as the rule target
 aws events put-targets \
-  --rule etc-every-minute \
+  --rule cron-runner-every-minute \
   --targets '[{"Id":"1","Arn":"<lambda-arn>"}]'
 
-# Grant EventBridge permissions to invoke the Lambda
+# Allow EventBridge to invoke the Lambda
 aws lambda add-permission \
-  --function-name etc-cron-runner \
+  --function-name cron-runner \
   --statement-id allow-events \
   --action lambda:InvokeFunction \
   --principal events.amazonaws.com \
   --source-arn <rule-arn>
 ```
 
-## 🧪 Testing
+## Testing
 
-EventBridge delivers an empty event payload which the handler naturally ignores. You can manually trigger a run to test S3 connectivity and API execution via the CLI:
+EventBridge delivers an empty event payload, which the handler ignores. To trigger a manual run:
 
 ```bash
-aws lambda invoke --function-name etc-cron-runner /dev/stdout
+aws lambda invoke --function-name cron-runner /dev/stdout
 ```
 
-## 📝 Important Notes
+## Notes
 
-- **Secrets Management:** The example `config.json` shows hardcoded Authorization headers. For production, ensure API tokens are rotated regularly, or modify the Lambda to fetch sensitive headers dynamically from AWS Secrets Manager.
-- **Timezones:** AWS Lambda executes in UTC time. Keep this in mind if you have daily intervals (e.g., `interval: 1440`) expecting execution at a specific local hour.
+- All scheduling evaluation runs in UTC. Account for this when defining intervals expected to align with local time.
+- Lambda has a 15-minute timeout cap. Jobs that may run long should be moved to async workers (SQS + worker Lambda or ECS) rather than executed inline.
+- Every invocation issues a fresh `GetObject` to S3. Acceptable at one-minute granularity; if invocation frequency increases, cache the config in module scope between warm starts.
+- Sub-minute scheduling is not possible. EventBridge's minimum rate is 1 minute.
+- Failures in concurrent jobs do not block siblings (`Promise.allSettled` is preferred over `Promise.all` for this; verify the handler matches before deploying).
