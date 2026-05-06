@@ -2,19 +2,8 @@
 
 A serverless cron job runner. A single AWS Lambda is invoked every minute by EventBridge, fetches a job catalogue from S3, evaluates which jobs are due based on the current time, and executes them concurrently as HTTP calls. Add, update, or remove scheduled jobs by editing one JSON file in S3. No redeploys.
 
-## How It Works
-
-```
-EventBridge rule (rate: 1 minute)
-        |
-        v
-Lambda (Node.js 18.x / 20.x)
-   1. Fetch s3://<bucket>/config.json via AWS SDK v3
-   2. Parse jobs array
-   3. For each job, evaluate shouldRunTask(job.interval) against current UTC time
-   4. Execute eligible jobs concurrently via axios
-   5. Log status codes to CloudWatch (payloads omitted)
-```
+## Architecture
+![Architecture Diagram](./architecture.png)
 
 ### Interval Semantics
 
